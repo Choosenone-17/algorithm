@@ -1,0 +1,232 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Smart Route Optimizer</title>
+
+    <!-- Graph -->
+    <script src="https://unpkg.com/vis-network/standalone/umd/vis-network.min.js"></script>
+
+    <!-- Leaflet -->
+    <link rel="stylesheet" href="https://unpkg.com/leaflet/dist/leaflet.css"/>
+    <script src="https://unpkg.com/leaflet/dist/leaflet.js"></script>
+
+    <style>
+        body {
+            font-family: Arial;
+            background: #eef2f7;
+            margin: 0;
+            padding: 20px;
+        }
+
+        h2 {
+            text-align: center;
+        }
+
+        .container {
+            display: flex;
+            gap: 20px;
+        }
+
+        .card {
+            background: white;
+            padding: 20px;
+            border-radius: 12px;
+            box-shadow: 0 4px 10px rgba(0,0,0,0.1);
+        }
+
+        .input-card {
+            width: 300px;
+        }
+
+        .output-card {
+            flex: 1;
+        }
+
+        input {
+            width: 100%;
+            padding: 8px;
+            margin-top: 5px;
+            margin-bottom: 15px;
+        }
+
+        button {
+            width: 100%;
+            padding: 10px;
+            background: #007bff;
+            color: white;
+            border: none;
+            border-radius: 6px;
+            cursor: pointer;
+        }
+
+        #graph, #map {
+            height: 300px;
+            margin-top: 10px;
+        }
+    </style>
+</head>
+
+<body>
+
+<h2>🚚 Smart Route Optimizer</h2>
+
+<div class="container">
+
+    <!-- INPUT -->
+    <div class="card input-card">
+        <h3>Input</h3>
+
+        <label>Start Location</label>
+        <input type="text" id="start" placeholder="e.g. Bhopal">
+
+        <label>Delivery Locations</label>
+        <input type="text" id="locations" placeholder="e.g. Indore, Delhi, Mumbai">
+
+        <button onclick="optimize()">Optimize Route</button>
+    </div>
+
+    <!-- OUTPUT -->
+    <div class="card output-card">
+        <h3>Graph</h3>
+        <div id="graph"></div>
+
+        <h3>Map</h3>
+        <div id="map"></div>
+
+        <h3>Result</h3>
+        <pre id="result"></pre>
+    </div>
+
+</div>
+
+<script>
+
+    let map;
+
+    function initMap() {
+        map = L.map('map').setView([23.2599, 77.4126], 5);
+
+        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+            attribution: 'OSM'
+        }).addTo(map);
+    }
+
+    async function getCoordinates(place) {
+        const url = `https://nominatim.openstreetmap.org/search?format=json&q=${place}`;
+        const res = await fetch(url);
+        const data = await res.json();
+
+        if (data.length === 0) return null;
+
+        return [parseFloat(data[0].lat), parseFloat(data[0].lon)];
+    }
+
+    async function optimize() {
+        const startInput = document.getElementById("start").value;
+        const locationsInput = document.getElementById("locations").value.split(",");
+
+        const allPlaces = [startInput, ...locationsInput];
+
+        // 🔥 Convert names → coordinates
+        const coordinates = {};
+
+        for (let place of allPlaces) {
+            place = place.trim();
+            const coord = await getCoordinates(place);
+
+            if (!coord) {
+                alert("Location not found: " + place);
+                return;
+            }
+
+            coordinates[place] = coord;
+        }
+
+        // ⚡ Convert places to nodes (A, B, C mapping)
+        const nodeMap = {};
+        let charCode = 65;
+
+        for (let place of allPlaces) {
+            nodeMap[String.fromCharCode(charCode)] = place.trim();
+            charCode++;
+        }
+
+        const startNode = "A";
+        const locationNodes = Object.keys(nodeMap).slice(1);
+
+        fetch("/api/optimize", {
+            method: "POST",
+            headers: {
+                "Content-Type": "application/json"
+            },
+            body: JSON.stringify({
+    start: startNode,
+    locations: locationNodes,
+    coordinates: Object.fromEntries(
+        Object.entries(nodeMap).map(([node, place]) => [node, coordinates[place]])
+    )
+})
+        })
+        .then(res => res.json())
+        .then(data => {
+
+            // Convert node result → place names
+            const routePlaces = data.route.map(node => nodeMap[node]);
+
+            document.getElementById("result").innerText =
+                JSON.stringify({
+                    route: routePlaces,
+                    totalDistance: data.totalDistance
+                }, null, 2);
+
+            drawGraph(routePlaces);
+            drawMap(routePlaces, coordinates);
+
+        });
+    }
+
+    function drawGraph(route) {
+        const nodes = new vis.DataSet();
+        const edges = new vis.DataSet();
+
+        route.forEach(place => {
+            nodes.add({ id: place, label: place });
+        });
+
+        for (let i = 0; i < route.length - 1; i++) {
+            edges.add({
+                from: route[i],
+                to: route[i + 1],
+                arrows: "to"
+            });
+        }
+
+        new vis.Network(document.getElementById("graph"), { nodes, edges });
+    }
+
+    function drawMap(route, coordinates) {
+
+        map.eachLayer(layer => {
+            if (layer instanceof L.Marker || layer instanceof L.Polyline) {
+                map.removeLayer(layer);
+            }
+        });
+
+        route.forEach((place, i) => {
+            const coord = coordinates[place];
+
+            L.marker(coord).addTo(map).bindPopup(place);
+
+            if (i > 0) {
+                const prev = coordinates[route[i - 1]];
+                L.polyline([prev, coord]).addTo(map);
+            }
+        });
+    }
+
+    window.onload = initMap;
+
+</script>
+
+</body>
+</html>
